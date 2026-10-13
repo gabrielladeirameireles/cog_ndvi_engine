@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>COG-NDVI Engine</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
+    <style>
+        * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; font-family: system-ui, -apple-system, sans-serif; }
+        header { background: #1f2937; color: white; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; height: 60px; }
+        header h2 { margin: 0; font-size: 20px; }
+        .controls { display: flex; gap: 10px; align-items: center; }
+        select, button, input[type="text"] { accent-color: #10b981; }
+        select, button { background: #10b981; color: white; border: none; padding: 7px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 13px; }
+        select { background: #374151; }
+        button:hover { background: #059669; }
+        .info-panel { background: #f3f4f6; padding: 8px 20px; border-bottom: 1px solid #ccc; font-size: 13px; height: 35px; display: flex; align-items: center; }
+        #map { width: 100vw; height: calc(100vh - 95px); position: relative; background: #e5e7eb; z-index: 1; }
+        .legend { background: rgba(255, 255, 255, 0.95); padding: 10px 14px; border-radius: 6px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); font-size: 12px; color: #1f2937; width: 200px; }
+        .legend-title { font-weight: bold; margin-bottom: 6px; text-align: center; }
+        .legend-bar { height: 16px; border-radius: 3px; margin: 6px 0; border: 1px solid #ccc; }
+        .legend-labels { display: flex; justify-content: space-between; font-weight: bold; color: #4b5563; }
+        #roiCard { position: absolute; top: 20px; right: 20px; z-index: 1000; background: rgba(255, 255, 255, 0.95); padding: 15px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.25); width: 320px; max-height: 80vh; overflow-y: auto; font-size: 13px; display: none; }
+        #roiCard h3 { margin: 0 0 10px 0; font-size: 15px; color: #10b981; border-bottom: 2px solid #10b981; padding-bottom: 4px; }
+        .roi-stat-row { display: flex; justify-content: space-between; margin-bottom: 6px; }
+        #historyPanel { position: absolute; top: 20px; left: 50px; z-index: 1000; background: rgba(255, 255, 255, 0.95); padding: 12px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.25); width: 260px; max-height: 400px; overflow-y: auto; font-size: 12px; display: none; }
+        #historyPanel h4 { margin: 0 0 8px 0; color: #1f2937; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
+        .history-item { padding: 8px; border: 1px solid #e5e7eb; border-radius: 4px; margin-bottom: 6px; background: #f9fafb; cursor: pointer; }
+        .history-item:hover { background: #f3f4f6; border-color: #10b981; }
+        .history-title { font-weight: bold; color: #10b981; display: flex; justify-content: space-between; }
+        .chart-box { margin-top: 10px; height: 150px; position: relative; }
+    </style>
+</head>
+<body>
+    <header>
+        <h2>COG-NDVI Engine</h2>
+        <div class="controls">
+            <label for="indexType">Índice:</label>
+            <select id="indexType" onchange="updateTileLayer()">
+                <option value="ndvi">NDVI (Vegetação)</option>
+                <option value="ndwi">NDWI (Água / Humidade)</option>
+                <option value="evi">EVI (Vegetação Densa)</option>
+            </select>
+            <label for="dataset">Dataset:</label>
+            <select id="dataset" onchange="loadXYZTileLayer()">
+                <option value="synthetic">Sintético (Brasília)</option>
+                <option value="sentinel">Sentinel-2 Real</option>
+            </select>
+            <label for="colormap">Paleta:</label>
+            <select id="colormap" onchange="updateTileLayer()">
+                <option value="classic">Clássico</option>
+                <option value="viridis">Viridis</option>
+                <option value="ylgn">YlGn</option>
+                <option value="spectral">Spectral</option>
+            </select>
+            <button onclick="toggleHistory()">Histórico de ROIs</button>
+            <button onclick="loadXYZTileLayer()">Carregar Camada</button>
+        </div>
+    </header>
+    <div class="info-panel">
+        <span id="stats">Status: Clique no mapa para inspeção de ponto ou desenhe um retângulo/polígono para estatísticas de ROI.</span>
+    </div>
+    <div id="map">
+        <div id="historyPanel">
+            <h4>ROIs Guardadas</h4>
+            <div id="historyList"><i>Sem registos guardados.</i></div>
+        </div>
+        <div id="roiCard">
+            <h3>Relatório de Análise da Área</h3>
+            <div id="roiContent"><i>Desenhe uma área no mapa para calcular.</i></div>
+            <div id="chartsContainer" style="display:none;">
+                <hr><b>Proporção das Classes:</b>
+                <div class="chart-box"><canvas id="donutChart"></canvas></div>
+                <hr><b>Histograma do Índice:</b>
+                <div class="chart-box"><canvas id="histChart"></canvas></div>
+            </div>
+            <div id="saveForm" style="display:none; margin-top:10px; border-top:1px solid #ddd; padding-top:8px;">
+                <input type="text" id="roiName" placeholder="Nome do Talhão / Propriedade" style="width:93%; padding:6px; margin-bottom:6px; border:1px solid #ccc; border-radius:4px;">
+                <button onclick="saveCurrentROI()" style="width:100%; background:#10b981; color:white; margin-bottom:6px;">Guardar na Base de Dados</button>
+            </div>
+            <button id="exportPdfBtn" onclick="downloadPDF()" style="margin-top:6px; width:100%; background:#2563eb; color:white; display:none;">Descarregar Relatório PDF</button>
+            <button id="exportGeoTiffBtn" onclick="downloadGeoTIFF()" style="margin-top:6px; width:100%; background:#059669; color:white; display:none;">Descarregar GeoTIFF</button>
+            <button onclick="clearROI()" style="margin-top:6px; width:100%; background:#ef4444;">Limpar Seleção</button>
+        </div>
+    </div>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        let map, drawnItems, ndviTileLayer = null, legendControl = null, currentROIGeometry = null, currentROIStats = null;
+        let donutChartInstance = null, histChartInstance = null;
+
+        document.addEventListener("DOMContentLoaded", function() {
+            map = L.map('map').setView([-15.7801, -47.9292], 11);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(map);
+
+            drawnItems = new L.FeatureGroup();
+            map.addLayer(drawnItems);
+
+            const drawControl = new L.Control.Draw({
+                draw: { polyline: false, circle: false, circlemarker: false, marker: false, polygon: { allowIntersection: false }, rectangle: true },
+                edit: { featureGroup: drawnItems }
+            });
+            map.addControl(drawControl);
+
+            L.DomEvent.disableClickPropagation(document.getElementById('roiCard'));
+            L.DomEvent.disableScrollPropagation(document.getElementById('roiCard'));
+            L.DomEvent.disableClickPropagation(document.getElementById('historyPanel'));
+            L.DomEvent.disableScrollPropagation(document.getElementById('historyPanel'));
+
+            map.on('click', async function (e) {
+                if (drawnItems.getLayers().length > 0 && currentROIGeometry) return;
+                const lat = e.latlng.lat, lon = e.latlng.lng, keys = getDatasetKeys();
+                const popup = L.popup().setLatLng(e.latlng).setContent('<i>Consultando ponto...</i>').openOn(map);
+                try {
+                    const response = await fetch(`/ndvi/point?lat=${lat}&lon=${lon}&red_key=${keys.red}&nir_key=${keys.nir}`);
+                    const data = await response.json();
+                    if (response.ok && data.valid) {
+                        popup.setContent(`
+                            <div style="font-size:13px; min-width:170px;">
+                                <b style="color:#10b981;">📍 Inspeção de Ponto</b><br>
+                                <b>NDVI:</b> <span style="color:#059669; font-size:15px; font-weight:bold;">${data.ndvi}</span><br>
+                                <b>Classe:</b> ${data.classification}<br>
+                                <hr style="margin:6px 0; border:0; border-top:1px solid #e5e7eb;">
+                                <small><b>Lat:</b> ${data.latitude.toFixed(4)} | <b>Lon:</b> ${data.longitude.toFixed(4)}</small>
+                            </div>
+                        `);
+                    } else { popup.setContent(`<span style="color:#ef4444;">${data.message || 'Ponto fora da área.'}</span>`); }
+                } catch (err) { popup.setContent('<span style="color:#ef4444;">Erro ao consultar ponto.</span>'); }
+            });
+
+            map.on(L.Draw.Event.CREATED, async function (e) {
+                drawnItems.clearLayers();
+                const layer = e.layer;
+                drawnItems.addLayer(layer);
+                currentROIGeometry = layer.toGeoJSON().geometry;
+
+                const roiCard = document.getElementById('roiCard');
+                const roiContent = document.getElementById('roiContent');
+                const exportBtn = document.getElementById('exportGeoTiffBtn');
+                const exportPdfBtn = document.getElementById('exportPdfBtn');
+                const saveForm = document.getElementById('saveForm');
+                const chartsContainer = document.getElementById('chartsContainer');
+
+                roiCard.style.display = 'block';
+                exportBtn.style.display = 'none';
+                exportPdfBtn.style.display = 'none';
+                saveForm.style.display = 'none';
+                chartsContainer.style.display = 'none';
+                roiContent.innerHTML = '<i>Calculando estatísticas na ROI...</i>';
+
+                const keys = getDatasetKeys();
+                try {
+                    const response = await fetch('/ndvi/roi-stats', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ geometry: currentROIGeometry, red_key: keys.red, nir_key: keys.nir })
+                    });
+                    const data = await response.json();
+                    if (response.ok && data.valid) {
+                        currentROIStats = data;
+                        roiContent.innerHTML = `
+                            <div class="roi-stat-row"><span>Área Total:</span><b>${data.area_ha} ha</b></div>
+                            <div class="roi-stat-row"><span>Média:</span><b style="color:#059669;">${data.mean_ndvi}</b></div>
+                            <div class="roi-stat-row"><span>Mín / Máx:</span><b>${data.min_ndvi} / ${data.max_ndvi}</b></div>
+                            <div class="roi-stat-row"><span>Desvio Padrão:</span><b>${data.std_ndvi}</b></div>
+                        `;
+                        renderCharts(data);
+                        chartsContainer.style.display = 'block';
+                        exportBtn.style.display = 'block';
+                        exportPdfBtn.style.display = 'block';
+                        saveForm.style.display = 'block';
+                    } else { roiContent.innerHTML = `<span style="color:#ef4444;">${data.message || 'Sem dados.'}</span>`; }
+                } catch (err) { roiContent.innerHTML = '<span style="color:#ef4444;">Erro no cálculo.</span>'; }
+            });
+
+            loadXYZTileLayer();
+            setTimeout(() => { map.invalidateSize(); }, 300);
+        });
+
+        function getDatasetKeys() {
+            const ds = document.getElementById('dataset').value;
+            return ds === 'sentinel' ? { red: 'sentinel_red.tif', nir: 'sentinel_nir.tif' } : { red: 'red_band.tif', nir: 'nir_band.tif' };
+        }
+
+        function renderCharts(data) {
+            if (donutChartInstance) donutChartInstance.destroy();
+            if (histChartInstance) histChartInstance.destroy();
+            const donutCtx = document.getElementById('donutChart').getContext('2d');
+            const classLabels = [], classPcts = [], classColors = ['#3b82f6', '#f59e0b', '#d9f99d', '#84cc16', '#15803d'];
+            for (const [k, v] of Object.entries(data.classes)) { classLabels.push(v.label); classPcts.push(v.pct); }
+            donutChartInstance = new Chart(donutCtx, {
+                type: 'doughnut',
+                data: { labels: classLabels, datasets: [{ data: classPcts, backgroundColor: classColors }] },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } } } }
+            });
+            if (data.histogram) {
+                const histCtx = document.getElementById('histChart').getContext('2d');
+                histChartInstance = new Chart(histCtx, {
+                    type: 'bar',
+                    data: { labels: data.histogram.labels, datasets: [{ label: 'Píxeis', data: data.histogram.counts, backgroundColor: '#10b981' }] },
+                    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { font: { size: 9 } } }, y: { ticks: { font: { size: 9 } } } } }
+                });
+            }
+        }
+
+        async function downloadPDF() {
+            if (!currentROIStats) return;
+            const nameInput = document.getElementById('roiName').value.trim() || "Talhão Sem Nome";
+            const indexType = document.getElementById('indexType').value;
+            const response = await fetch('/ndvi/export-pdf', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: nameInput, index_type: indexType, stats: currentROIStats })
+            });
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = `relatorio_${Date.now()}.pdf`; a.click();
+        }
+
+        async function saveCurrentROI() {
+            const name = document.getElementById('roiName').value.trim();
+            if (!name) return alert('Insira um nome para a ROI.');
+            const payload = { name: name, index_type: document.getElementById('indexType').value, dataset: document.getElementById('dataset').value, geometry: currentROIGeometry, area_ha: currentROIStats.area_ha, total_pixels: currentROIStats.total_pixels, mean_val: currentROIStats.mean_ndvi, min_val: currentROIStats.min_ndvi, max_val: currentROIStats.max_ndvi, std_val: currentROIStats.std_ndvi || 0.0, classes: currentROIStats.classes };
+            try {
+                const response = await fetch('/ndvi/roi/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                if (response.ok) { alert('ROI guardada!'); document.getElementById('roiName').value = ''; loadHistory(); }
+            } catch (err) { alert('Erro ao guardar ROI.'); }
+        }
+
+        async function loadHistory() {
+            const listDiv = document.getElementById('historyList');
+            try {
+                const response = await fetch('/ndvi/roi/history');
+                const history = await response.json();
+                if (!history.length) { listDiv.innerHTML = '<i>Nenhum registo.</i>'; return; }
+                let html = '';
+                history.forEach(item => {
+                    html += `<div class="history-item"><div class="history-title" onclick="renderSavedROI('${encodeURIComponent(JSON.stringify(item))}')"><span>${item.name}</span><span style="color:#ef4444;" onclick="event.stopPropagation(); deleteROI(${item.id})">✕</span></div><div onclick="renderSavedROI('${encodeURIComponent(JSON.stringify(item))}')"><small>${item.created_at} | ${item.index_type.toUpperCase()}</small><br><b>${item.area_ha} ha</b> | Média: <b>${item.mean_val}</b></div></div>`;
+                });
+                listDiv.innerHTML = html;
+            } catch (err) { listDiv.innerHTML = 'Erro ao carregar histórico.'; }
+        }
+
+        function renderSavedROI(encodedData) {
+            const item = JSON.parse(decodeURIComponent(encodedData));
+            if (drawnItems) drawnItems.clearLayers();
+            const layer = L.geoJSON(item.geometry, { style: { color: '#10b981', weight: 3, fillOpacity: 0.3 } });
+            if (drawnItems) drawnItems.addLayer(layer);
+            map.fitBounds(layer.getBounds());
+            document.getElementById('roiCard').style.display = 'block';
+            document.getElementById('saveForm').style.display = 'none';
+            document.getElementById('exportPdfBtn').style.display = 'block';
+            currentROIStats = { area_ha: item.area_ha, total_pixels: item.total_pixels || 0, mean_ndvi: item.mean_val, min_ndvi: item.min_val, max_ndvi: item.max_val, std_val: item.std_val || 0.0, classes: item.classes || {} };
+            document.getElementById('roiContent').innerHTML = `<div style="font-weight:bold; color:#10b981; margin-bottom:4px;">📌 ${item.name}</div><div class="roi-stat-row"><span>Área Total:</span><b>${item.area_ha} ha</b></div><div class="roi-stat-row"><span>Média:</span><b style="color:#059669;">${item.mean_val}</b></div><div class="roi-stat-row"><span>Mín / Máx:</span><b>${item.min_val} / ${item.max_val}</b></div>`;
+            if (item.classes) { renderCharts({ classes: item.classes, histogram: null }); document.getElementById('chartsContainer').style.display = 'block'; }
+        }
+
+        async function deleteROI(id) { if (!confirm('Eliminar registo?')) return; await fetch(`/ndvi/roi/${id}`, { method: 'DELETE' }); loadHistory(); }
+        function toggleHistory() { const panel = document.getElementById('historyPanel'); panel.style.display = panel.style.display === 'block' ? 'none' : 'block'; if (panel.style.display === 'block') loadHistory(); }
+        async function downloadGeoTIFF() { if (!currentROIGeometry) return; const keys = getDatasetKeys(); const response = await fetch('/ndvi/export-geotiff', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ geometry: currentROIGeometry, red_key: keys.red, nir_key: keys.nir }) }); const blob = await response.blob(); const url = window.URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `recorte_${Date.now()}.tif`; a.click(); }
+        function clearROI() { if (drawnItems) drawnItems.clearLayers(); currentROIGeometry = null; document.getElementById('roiCard').style.display = 'none'; }
+
+        function addLegend() {
+            if (legendControl) return;
+            legendControl = L.control({ position: 'bottomright' });
+            legendControl.onAdd = function () {
+                const div = L.DomUtil.create('div', 'legend');
+                div.innerHTML = `<div class="legend-title" id="legendTitle">Índice Espectral</div><div class="legend-bar" id="legendBar"></div><div class="legend-labels" id="legendLabels"></div>`;
+                return div;
+            };
+            legendControl.addTo(map);
+            updateLegend();
+        }
+
+        function updateLegend() {
+            const indexType = document.getElementById('indexType').value;
+            const bar = document.getElementById('legendBar'), title = document.getElementById('legendTitle'), labels = document.getElementById('legendLabels');
+            if (!bar) return;
+            if (indexType === 'ndwi') {
+                title.innerText = "Índice NDWI (Água)";
+                bar.style.background = 'linear-gradient(to right, #ffffff, #60a5fa, #1d4ed8)';
+                labels.innerHTML = '<span>-1.0</span><span>0.0</span><span>+1.0</span>';
+            } else {
+                title.innerText = "Índice " + indexType.toUpperCase();
+                bar.style.background = 'linear-gradient(to right, red, yellow, green)';
+                labels.innerHTML = '<span>-1.0</span><span>0.0</span><span>+1.0</span>';
+            }
+        }
+
+        function updateTileLayer() {
+            const colormap = document.getElementById('colormap').value;
+            const indexType = document.getElementById('indexType').value;
+            const keys = getDatasetKeys();
+            if (ndviTileLayer && map) map.removeLayer(ndviTileLayer);
+            ndviTileLayer = L.tileLayer(`/ndvi/tiles/{z}/{x}/{y}.png?red_key=${keys.red}&nir_key=${keys.nir}&colormap=${colormap}&index_type=${indexType}`, { maxZoom: 18, opacity: 0.85 }).addTo(map);
+            updateLegend();
+        }
+
+        async function loadXYZTileLayer() { addLegend(); updateTileLayer(); }
+    </script>
+</body>
+</html>
